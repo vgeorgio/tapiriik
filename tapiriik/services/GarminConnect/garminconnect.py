@@ -115,21 +115,33 @@ class GarminConnectService(ServiceBase):
         "rpm": ActivityStatisticUnit.RevolutionsPerMinute,
         "watt": ActivityStatisticUnit.Watts,
         "second": ActivityStatisticUnit.Seconds,
-        "ms": ActivityStatisticUnit.Milliseconds
+        "ms": ActivityStatisticUnit.Milliseconds,
+        "mps": ActivityStatisticUnit.MetersPerSecond
     }
 
     _obligatory_headers = {
         "Referer": "https://sync.tapiriik.com"
     }
+    _garmin_signin_headers = {
+        "origin": "https://sso.garmin.com"
+    }
 
     def __init__(self):
         cachedHierarchy = cachedb.gc_type_hierarchy.find_one()
         if not cachedHierarchy:
-            rawHierarchy = requests.get("https://connect.garmin.com/proxy/activity-service-1.2/json/activity_types", headers=self._obligatory_headers).text
-            self._activityHierarchy = json.loads(rawHierarchy)["dictionary"]
+            rawHierarchy = requests.get("https://connect.garmin.com/modern/proxy/activity-service/activity/activityTypes", headers=self._obligatory_headers).text
+            self._activityHierarchy = json.loads(rawHierarchy)
             cachedb.gc_type_hierarchy.insert({"Hierarchy": rawHierarchy})
         else:
-            self._activityHierarchy = json.loads(cachedHierarchy["Hierarchy"])["dictionary"]
+            self._activityHierarchy = json.loads(cachedHierarchy["Hierarchy"])
+            
+        # hashmaps for determining parent type key
+        self._typeKeyParentMap = {}
+        self._typeIdKeyMap = {}        
+        for x in self._activityHierarchy:
+            self._typeKeyParentMap[x["typeKey"]] = x["parentTypeId"]
+            self._typeIdKeyMap[x["typeId"]] = x["typeKey"] 
+            
         rate_lock_path = tempfile.gettempdir() + "/gc_rate.%s.lock" % HTTP_SOURCE_ADDR
         # Ensure the rate lock file exists (...the easy way)
         open(rate_lock_path, "a").close()
@@ -156,9 +168,9 @@ class GarminConnectService(ServiceBase):
         finally:
             fcntl.flock(self._rate_lock,fcntl.LOCK_UN)
 
-    def _request_with_reauth(self, req_lambda, serviceRecord=None, email=None, password=None):
+    def _request_with_reauth(self, req_lambda, serviceRecord=None, email=None, password=None, force_skip_cache=False):
         for i in range(self._reauthAttempts + 1):
-            session = self._get_session(record=serviceRecord, email=email, password=password, skip_cache=i > 0)
+            session = self._get_session(record=serviceRecord, email=email, password=password, skip_cache=(force_skip_cache or i > 0))
             self._rate_limit()
             result = req_lambda(session)
             if result.status_code not in (403, 500):
@@ -211,11 +223,11 @@ class GarminConnectService(ServiceBase):
             # "locale": "en"
         }
         # I may never understand what motivates people to mangle a perfectly good protocol like HTTP in the ways they do...
-        preResp = session.get("https://sso.garmin.com/sso/login", params=params)
+        preResp = session.get("https://sso.garmin.com/sso/signin", params=params)
         if preResp.status_code != 200:
             raise APIException("SSO prestart error %s %s" % (preResp.status_code, preResp.text))
 
-        ssoResp = session.post("https://sso.garmin.com/sso/login", params=params, data=data, allow_redirects=False)
+        ssoResp = session.post("https://sso.garmin.com/sso/signin", headers=self._garmin_signin_headers, params=params, data=data, allow_redirects=False)
         if ssoResp.status_code != 200 or "temporarily unavailable" in ssoResp.text:
             raise APIException("SSO error %s %s" % (ssoResp.status_code, ssoResp.text))
 
@@ -285,7 +297,7 @@ class GarminConnectService(ServiceBase):
         # But maybe they'll change that some day?
         while act_type not in self._activityMappings:
             try:
-                act_type = [x["parent"]["key"] for x in self._activityHierarchy if x["key"] == act_type][0]
+                act_type = self._typeIdKeyMap[self._typeKeyParentMap[act_type]]
             except IndexError:
                 raise ValueError("Activity type not found in activity hierarchy")
         return self._activityMappings[act_type]
@@ -296,10 +308,12 @@ class GarminConnectService(ServiceBase):
         pageSz = 100
         activities = []
         exclusions = []
+        force_reauth = False
         while True:
             logger.debug("Req with " + str({"start": (page - 1) * pageSz, "limit": pageSz}))
 
-            res = self._request_with_reauth(lambda session: session.get("https://connect.garmin.com/modern/proxy/activitylist-service/activities/search/activities", params={"start": (page - 1) * pageSz, "limit": pageSz}), serviceRecord)
+            res = self._request_with_reauth(lambda session: session.get("https://connect.garmin.com/modern/proxy/activitylist-service/activities/search/activities", params={"start": (page - 1) * pageSz, "limit": pageSz}), serviceRecord, force_skip_cache=force_reauth)
+            force_reauth = False
 
             try:
                 res = res.json()
@@ -307,6 +321,11 @@ class GarminConnectService(ServiceBase):
                 res_txt = res.text # So it can capture in the log message
                 raise APIException("Parse failure in GC list resp: %s - %s" % (res.status_code, res_txt))
             for act in res:
+                if "ROLE_SYSTEM" in act["userRoles"]:
+                    # GC for some reason return test data set instead of 401 for unauthorized call
+                    force_reauth = True
+                    break
+
                 activity = UploadedActivity()
                 # stationary activities have movingDuration = None while non-gps static activities have 0.0
                 activity.Stationary = act["movingDuration"] is None
@@ -341,6 +360,11 @@ class GarminConnectService(ServiceBase):
                 activity.ServiceData = {"ActivityID": int(act["activityId"])}
 
                 activities.append(activity)
+
+            if force_reauth:
+                # Re-run activity listing
+                continue
+
             logger.debug("Finished page " + str(page))
             if not exhaustive or len(res) == 0:
                 break
@@ -438,15 +462,15 @@ class GarminConnectService(ServiceBase):
             # Nothing else to download
             return activity
 
-        # https://connect.garmin.com/proxy/activity-service-1.3/json/activityDetails/####
+        # https://connect.garmin.com/modern/proxy/activity-service/activity/###/details
         activityID = activity.ServiceData["ActivityID"]
-        res = self._request_with_reauth(lambda session: session.get("https://connect.garmin.com/modern/proxy/activity-service-1.3/json/activityDetails/" + str(activityID) + "?maxSize=999999999"), serviceRecord)
+        res = self._request_with_reauth(lambda session: session.get("https://connect.garmin.com/modern/proxy/activity-service/activity/{}/details?maxSize=999999999".format(activityID)), serviceRecord)
         try:
-            raw_data = res.json()["com.garmin.activity.details.json.ActivityDetails"]
+            raw_data = res.json()
         except ValueError:
             raise APIException("Activity data parse error for %s: %s" % (res.status_code, res.text))
 
-        if "measurements" not in raw_data:
+        if "metricDescriptors" not in raw_data:
             activity.Stationary = True # We were wrong, oh well
             return activity
 
@@ -473,11 +497,11 @@ class GarminConnectService(ServiceBase):
 
         # Figure out which metrics we'll be seeing in this activity
         attrs_indexed = {}
-        for measurement in raw_data["measurements"]:
+        for measurement in raw_data["metricDescriptors"]:
             key = measurement["key"]
             if key in attrs_map:
                 if attrs_map[key]["to_units"]:
-                    attrs_map[key]["from_units"] = self._unitMap[measurement["unit"]]
+                    attrs_map[key]["from_units"] = self._unitMap[measurement["unit"]["key"]]
                     if attrs_map[key]["to_units"] == attrs_map[key]["from_units"]:
                         attrs_map[key]["to_units"] = attrs_map[key]["from_units"] = None
                 attrs_indexed[measurement["metricsIndex"]] = attrs_map[key]
@@ -485,7 +509,7 @@ class GarminConnectService(ServiceBase):
         # Process the data frames
         frame_idx = 0
         active_lap_idx = 0
-        for frame in raw_data["metrics"]:
+        for frame in raw_data["activityDetailMetrics"]:
             wp = Waypoint()
             for idx, attr in attrs_indexed.items():
                 value = frame["metrics"][idx]
@@ -536,9 +560,12 @@ class GarminConnectService(ServiceBase):
             raise APIException("Bad response during GC upload: %s %s" % (res.status_code, res.text))
 
         if len(res["successes"]) == 0:
-            if len(res["failures"]) and len(res["failures"][0]["messages"]) and res["failures"][0]["messages"][0]["content"] == "Duplicate activity":
-                logger.debug("Duplicate")
-                return # ...cool?
+            if len(res["failures"]) and len(res["failures"][0]["messages"]):
+                if res["failures"][0]["messages"][0]["content"] == "Duplicate activity":
+                    logger.debug("Duplicate")
+                    return # ...cool?
+                if res["failures"][0]["messages"][0]["content"] == "The user is from EU location, but upload consent is not yet granted or revoked":
+                    raise APIException("EU user with no upload consent", block=True, user_exception=UserException(UserExceptionType.GCUploadConsent, intervention_required=True))
             raise APIException("Unable to upload activity %s" % res)
         if len(res["successes"]) > 1:
             raise APIException("Uploaded succeeded, resulting in too many activities")

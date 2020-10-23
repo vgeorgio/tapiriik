@@ -11,10 +11,24 @@
 		<a href="{% url 'diagnostics_unsu' %}">Return</a>
 		<hr/>
 		{% endif %}
+		<p><b>Seeing strange activities in your accounts uploaded by tapiriik?</b> <a href="/garmin_connect_bad_data">Read more here.</a></p>
+
+		{% if user.BlockedOnBadActivitiesAcknowledgement %}
+		<form method="POST" action="/sync/bad_activities_acknowledgement_clear" style="text-align: center;">{% csrf_token %}
+		<p>To prevent these bad activities from spreading further, your account is currently paused. Once you have read the above page and cleared any bad activities from your account, please click the button below:<br/>
+			<button type="submit">I've checked my accounts and deleted any incorrect activities from this incident</button></p>
+		</form>
+		{% endif %}
 		{% if user.ConnectedServices|length > 1 %}
 			{% infotip connectedWillSync %}Connected services will be synchronized {% if user|has_active_payment %}automatically{% else %}when you click Synchronize now{% endif %}{% endinfotip %}
 		{% else %}
 			{% infotip connectOneMore %}Connect a second service to synchronize your activities to &amp; from{% endinfotip %}
+		{% endif %}
+		{% if "garminconnect" in user.ConnectedServices|svc_ids %}
+		{% infotip gc_old %}In order to continue synchronizing activities from your Garmin Connect account, please connect it again.{% endinfotip %}
+		{% endif %}
+		{% if "garminconnect2" in user.ConnectedServices|svc_ids %}
+		{% infotip gc_new_oneway_2 %}Due to new limitations in Garmin Connect's API, tapiriik can no longer upload activities to your Garmin Connect account, download historical activities from before you connected to tapiriik, or detect private acitivites (all activities uploaded to your Garmin Connect account will be synchronized).{% endinfotip %}
 		{% endif %}
 		<div class="serviceButtonOuter">
 			<div class="serviceButtonWrap">
@@ -63,8 +77,9 @@
 	{% endfor %}
 
 {% else %}
-<p class="splashPreamble">tapiriik synchronizes your fitness activities between Garmin Connect, Runkeeper, Strava, TrainingPeaks, SportTracks.mobi, Endomondo, RideWithGPS, TrainAsONE, TrainerRoad, Motivato, Velo Hero, Epson RUNSENSE, Dropbox, Smashrun, BeginnerTriathlete, Pulsstory, Singletracker, Aerobia, and SETIO<br/>
+<p class="splashPreamble">tapiriik synchronizes your fitness activities between Garmin Connect, Runkeeper, Strava, TrainingPeaks, SportTracks.mobi, Endomondo, RideWithGPS, TrainAsONE, TrainerRoad, Motivato, Velo Hero, Epson RUNSENSE, Dropbox, Smashrun, BeginnerTriathlete, Pulsstory, Singletracker,  and SETIO<br/>
 (your heart rate, cadence, power, and temperature data syncs too)</p>
+
 	{% for provider in service_providers %}
 		{% if provider.ID not in config.soft_launch and provider.ID not in config.withdrawn_services %}
 			{% include "service-button.html" with provider=provider %}

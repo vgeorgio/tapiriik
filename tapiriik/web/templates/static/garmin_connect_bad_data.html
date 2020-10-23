@@ -1,0 +1,29 @@
+{% extends "site.html" %}
+{% block title %}tapiriik uploaded strange activities to my accounts{% endblock %}
+{% block content %}
+<h1>tapiriik uploaded strange activities to my accounts!</h1>
+<h2>...what's going on?</h2>
+
+<div style="border: 3px solid black; border-radius: 3px; padding: 30px;">
+<h3 style="margin: 0;">Summary: An error in how tapiriik communicated with Garmin Connect caused sample activities from a test account to be uploaded to some users' accounts. <u>Please delete these bad activities from all your accounts to avoid future issues.</u></h3>
+</div>
+
+<div style="text-align: left">
+<h3>Where did these activities come from?</h3>
+<p>These activities originated from an external test account populated with sample activities, which were already publicly available.</p>
+
+<h3>Whose activities are they? Were my activities sent to someone else's account?</h3>
+
+<p>Everyone affected by this issue received the same set of publicly available sample activities. These sample activities were not from tapiriik users. Your activities were not sent to anyone else's accounts, nor were anyone else's activities sent to your account.</p>
+
+<h3>Is the issue fixed?</h3>
+
+<p>Yes and no. The original error in the Garmin Connect integration has been fixed, and additional checks have been added to prevent this situation occurring again.</p>
+
+<p><b>However, these bad activities must now be manually deleted from your accounts</b> so that they can not be synchronized any further. Unfortunately, tapiriik can't safely delete the bad activities for you without risking your real data, so this process must be done by hand. Sorry for the inconvenience!</p>
+
+<h3>Is this a problem with Strava? RunKeeper? Endomondo? etc.?</h3>
+
+<p>No.</p>
+</div>
+{% endblock %}

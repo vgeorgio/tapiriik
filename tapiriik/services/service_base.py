@@ -54,6 +54,8 @@ class ServiceBase:
     #  - One is triggered (via IDs returned by ExternalIDsForPartialSyncTrigger or PollPartialSyncTrigger)
     #  - One is necessitated (non-partial sync, possibility of uploading new activities, etc)
     PartialSyncRequiresTrigger = False
+    PartialSyncTriggerRequiresSubscription = False
+    PartialSyncTriggerStatusCode = 204
     # Timedelta for polling to happen at (or None for no polling)
     PartialSyncTriggerPollInterval = None
     # How many times to call the polling method per interval (this is for the multiple_index kwarg)
@@ -67,6 +69,8 @@ class ServiceBase:
     # Global rate limiting options
     # For when there's a limit on the API key itself
     GlobalRateLimits = []
+    # Preemptively sleep to avoid hitting the limits
+    GlobalRateLimitsPreemptiveSleep = False
 
     @property
     def PartialSyncTriggerRequiresPolling(self):
@@ -151,7 +155,7 @@ class ServiceBase:
 
     def _globalRateLimit(self):
         try:
-            RateLimit.Limit(self.ID)
+            RateLimit.Limit(self.ID, self.GlobalRateLimits if self.GlobalRateLimitsPreemptiveSleep else ())
         except RateLimitExceededException:
             raise ServiceException("Global rate limit reached", user_exception=UserException(UserExceptionType.RateLimited))
 
